@@ -5,6 +5,7 @@ using MongoDB.Driver;
 
 namespace Api.Application.ReferenceData;
 
+// Сервис для загрузки справочных данных (сотрудники и проекты) для выпадающих списков
 public sealed class ReferenceDataService
 {
     private readonly MongoDbContext _db;
@@ -14,6 +15,7 @@ public sealed class ReferenceDataService
         _db = db;
     }
 
+    // Получает список сотрудников, отсортированных по имени
     public async Task<IReadOnlyList<EmployeeReferenceItem>> GetEmployeesAsync(
         CancellationToken cancellationToken)
     {
@@ -32,6 +34,7 @@ public sealed class ReferenceDataService
             .ToArray();
     }
 
+    // Получает список проектов, отсортированных по шифру
     public async Task<IReadOnlyList<ProjectReferenceItem>> GetProjectsAsync(
         CancellationToken cancellationToken)
     {

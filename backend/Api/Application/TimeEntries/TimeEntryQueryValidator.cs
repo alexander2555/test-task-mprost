@@ -4,8 +4,10 @@ using MongoDB.Bson;
 
 namespace Api.Application.TimeEntries;
 
+// Валидатор запроса списка записей табеля. Проверяет год, месяц, пагинацию и ObjectId.
 public static class TimeEntryQueryValidator
 {
+    // Валидирует и парсит параметры запроса в типизированную структуру
     public static TimeEntryQueryParameters Validate(TimeEntryQueryRequest request)
     {
         var errors = new Dictionary<string, string[]>();
@@ -81,6 +83,7 @@ public static class TimeEntryQueryValidator
     }
 }
 
+// Типизированные параметры запроса после валидации и парсинга
 public sealed record TimeEntryQueryParameters(
     int Year,
     int Month,

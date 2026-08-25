@@ -7,6 +7,7 @@ using MongoDB.Driver;
 
 namespace Api.Application.TimeEntries;
 
+// Сервис для чтения записей табеля с пагинацией, батч-загрузкой связанных данных и вычислением ставок и переработок
 public sealed class TimeEntryQueryService
 {
     private readonly MongoDbContext _db;
@@ -16,6 +17,7 @@ public sealed class TimeEntryQueryService
         _db = db;
     }
 
+    // Получает список записей табеля с пагинацией, вычислением ставок, стоимости и переработок
     public async Task<TimeEntryListResponse> GetAsync(
         TimeEntryQueryRequest request,
         CancellationToken cancellationToken)
@@ -27,41 +29,9 @@ public sealed class TimeEntryQueryService
             filter,
             cancellationToken: cancellationToken);
 
-        // Для итогов нужны только EmployeeId, Date и Hours за отфильтрованный месяц.
-        // Детальные записи при этом всё равно загружаются постранично.
-        var totalSources = await _db.TimeEntries
-            .Find(filter)
-            .Project(entry => new TimeEntryCostSource
-            {
-                EmployeeId = entry.EmployeeId,
-                Date = entry.Date,
-                Hours = entry.Hours
-            })
-            .ToListAsync(cancellationToken);
-
-        var employees = await LoadEmployeesAsync(
-            totalSources.Select(source => source.EmployeeId),
+        var totals = await LoadTotalsAsync(
+            query,
             cancellationToken);
-
-        var totalHours = totalSources.Sum(source => source.Hours);
-        var totalAmount = 0m;
-
-        foreach (var source in totalSources)
-        {
-            if (!employees.TryGetValue(source.EmployeeId, out var employee))
-            {
-                throw TimeEntryReadCalculator.DataInconsistent(
-                    "Для записи табеля не найден сотрудник.");
-            }
-
-            var rate = TimeEntryReadCalculator.ResolveRate(employee, source.Date);
-            totalAmount += TimeEntryReadCalculator.CalculateAmount(source.Hours, rate);
-        }
-
-        totalAmount = Math.Round(
-            totalAmount,
-            2,
-            MidpointRounding.AwayFromZero);
 
         var skip = checked((query.Page - 1) * query.PageSize);
 
@@ -81,33 +51,14 @@ public sealed class TimeEntryQueryService
                 Page = query.Page,
                 PageSize = query.PageSize,
                 TotalCount = totalCount,
-                TotalHours = totalHours,
-                TotalAmount = totalAmount
+                TotalHours = totals.Hours,
+                TotalAmount = totals.Amount
             };
         }
 
-        var pageEmployeeIds = entries
-            .Select(entry => entry.EmployeeId)
-            .Distinct()
-            .ToArray();
-
-        // Сотрудники уже могли быть загружены для totals. Дополняем словарь,
-        // если filtered dataset пуст/изменился между запросами.
-        var missingEmployeeIds = pageEmployeeIds
-            .Where(id => !employees.ContainsKey(id))
-            .ToArray();
-
-        if (missingEmployeeIds.Length > 0)
-        {
-            var additionalEmployees = await LoadEmployeesAsync(
-                missingEmployeeIds,
-                cancellationToken);
-
-            foreach (var pair in additionalEmployees)
-            {
-                employees[pair.Key] = pair.Value;
-            }
-        }
+        var employees = await LoadEmployeesAsync(
+            entries.Select(entry => entry.EmployeeId),
+            cancellationToken);
 
         var projects = await LoadProjectsAsync(
             entries.Select(entry => entry.ProjectId),
@@ -162,11 +113,12 @@ public sealed class TimeEntryQueryService
             Page = query.Page,
             PageSize = query.PageSize,
             TotalCount = totalCount,
-            TotalHours = totalHours,
-            TotalAmount = totalAmount
+            TotalHours = totals.Hours,
+            TotalAmount = totals.Amount
         };
     }
 
+    // Строит фильтр MongoDB по периоду, сотруднику и проекту
     private static FilterDefinition<TimeEntry> BuildFilter(
         TimeEntryQueryParameters query)
     {
@@ -196,6 +148,97 @@ public sealed class TimeEntryQueryService
         return filter;
     }
 
+    // Вычисляет итоговые часы и стоимость с помощью MongoDB aggregation pipeline
+    private async Task<TimeEntryTotals> LoadTotalsAsync(
+        TimeEntryQueryParameters query,
+        CancellationToken cancellationToken)
+    {
+        var from = new DateTime(query.Year, query.Month, 1, 0, 0, 0, DateTimeKind.Utc);
+        var nextMonth = query.Month == 12
+            ? new DateTime(query.Year + 1, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+            : new DateTime(query.Year, query.Month + 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+        var match = new BsonDocument
+        {
+            ["date"] = new BsonDocument
+            {
+                ["$gte"] = from,
+                ["$lt"] = nextMonth
+            }
+        };
+
+        if (query.EmployeeId.HasValue)
+        {
+            match["employeeId"] = query.EmployeeId.Value;
+        }
+
+        if (query.ProjectId.HasValue)
+        {
+            match["projectId"] = query.ProjectId.Value;
+        }
+
+        var pipeline = new[]
+        {
+            new BsonDocument("$match", match),
+            new BsonDocument("$lookup", new BsonDocument
+            {
+                ["from"] = "employees",
+                ["localField"] = "employeeId",
+                ["foreignField"] = "_id",
+                ["as"] = "employee"
+            }),
+            new BsonDocument("$unwind", "$employee"),
+            new BsonDocument("$unwind", "$employee.rates"),
+            new BsonDocument("$match", new BsonDocument(
+                "$expr",
+                new BsonDocument("$lte", new BsonArray
+                {
+                    "$employee.rates.from",
+                    "$date"
+                }))),
+            new BsonDocument("$sort", new BsonDocument
+            {
+                ["_id"] = 1,
+                ["employee.rates.from"] = -1
+            }),
+            new BsonDocument("$group", new BsonDocument
+            {
+                ["_id"] = "$_id",
+                ["hours"] = new BsonDocument("$first", "$hours"),
+                ["rate"] = new BsonDocument("$first", "$employee.rates.value")
+            }),
+            new BsonDocument("$set", new BsonDocument(
+                "amount",
+                new BsonDocument("$round", new BsonArray
+                {
+                    new BsonDocument("$multiply", new BsonArray { "$hours", "$rate" }),
+                    2
+                }))),
+            new BsonDocument("$group", new BsonDocument
+            {
+                ["_id"] = BsonNull.Value,
+                ["hours"] = new BsonDocument("$sum", "$hours"),
+                ["amount"] = new BsonDocument("$sum", "$amount")
+            })
+        };
+
+        var documents = await _db.TimeEntries
+            .Aggregate<BsonDocument>(pipeline)
+            .ToListAsync(cancellationToken);
+
+        if (documents.Count == 0)
+        {
+            return new TimeEntryTotals(0m, 0m);
+        }
+
+        var document = documents[0];
+
+        return new TimeEntryTotals(
+            ToDecimal(document["hours"]),
+            ToDecimal(document["amount"]));
+    }
+
+    // Батч-загружает сотрудников по списку ID для избежания N+1 запросов
     private async Task<Dictionary<ObjectId, Employee>> LoadEmployeesAsync(
         IEnumerable<ObjectId> ids,
         CancellationToken cancellationToken)
@@ -214,6 +257,7 @@ public sealed class TimeEntryQueryService
         return employees.ToDictionary(employee => employee.Id);
     }
 
+    // Батч-загружает проекты по списку ID для избежания N+1 запросов
     private async Task<Dictionary<ObjectId, Project>> LoadProjectsAsync(
         IEnumerable<ObjectId> ids,
         CancellationToken cancellationToken)
@@ -232,6 +276,7 @@ public sealed class TimeEntryQueryService
         return projects.ToDictionary(project => project.Id);
     }
 
+    // Загружает суммарные часы по сотрудникам и датам для расчёта переработок
     private async Task<Dictionary<EmployeeDateKey, decimal>> LoadDailyHoursAsync(
         IReadOnlyCollection<TimeEntry> pageEntries,
         CancellationToken cancellationToken)
@@ -266,16 +311,23 @@ public sealed class TimeEntryQueryService
                 group => group.Sum(entry => entry.Hours));
     }
 
-    private sealed class TimeEntryCostSource
+    // Преобразует BSON значение в decimal с поддержкой различных числовых типов
+    private static decimal ToDecimal(BsonValue value)
     {
-        public ObjectId EmployeeId { get; init; }
+        if (value.IsDecimal128)
+        {
+            return Decimal128.ToDecimal(value.AsDecimal128);
+        }
 
-        [BsonDateOnlyOptions(BsonType.DateTime)]
-        public DateOnly Date { get; init; }
+        if (value.IsInt32) return value.AsInt32;
+        if (value.IsInt64) return value.AsInt64;
+        if (value.IsDouble) return Convert.ToDecimal(value.AsDouble);
 
-        public decimal Hours { get; init; }
+        throw new InvalidOperationException(
+            $"Expected numeric BSON value, got {value.BsonType}.");
     }
 
+    // Вспомогательный класс для проекции при загрузке ежедневных часов
     private sealed class TimeEntryDailySource
     {
         public ObjectId EmployeeId { get; init; }
@@ -286,6 +338,12 @@ public sealed class TimeEntryQueryService
         public decimal Hours { get; init; }
     }
 
+    // Итоговые суммы часов и стоимости
+    private readonly record struct TimeEntryTotals(
+        decimal Hours,
+        decimal Amount);
+
+    // Ключ для группировки по сотруднику и дате
     private readonly record struct EmployeeDateKey(
         ObjectId EmployeeId,
         DateOnly Date);
