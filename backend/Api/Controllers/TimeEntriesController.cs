@@ -6,20 +6,38 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Api.Controllers;
 
-// Контроллер для CRUD операций с записями табеля. Обрабатывает HTTP-запросы и преобразует исключения в ответы.
+// Контроллер для CRUD и read-side операций с записями табеля.
 [ApiController]
 [Route("api/time-entries")]
 public sealed class TimeEntriesController : ControllerBase
 {
     private readonly TimeEntryService _service;
+    private readonly TimeEntryQueryService _queryService;
 
-    // Создаёт новый экземпляр контроллера с сервисом записей табеля
-    public TimeEntriesController(TimeEntryService service)
+    public TimeEntriesController(
+        TimeEntryService service,
+        TimeEntryQueryService queryService)
     {
         _service = service;
+        _queryService = queryService;
     }
 
-    // Создаёт новую запись табеля. Возвращает 201 Created с данными записи.
+    [HttpGet]
+    public async Task<ActionResult<TimeEntryListResponse>> Get(
+        [FromQuery] TimeEntryQueryRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _queryService.GetAsync(request, cancellationToken);
+            return Ok(result);
+        }
+        catch (ApiException exception)
+        {
+            return ToErrorResult(exception);
+        }
+    }
+
     [HttpPut]
     public async Task<ActionResult<TimeEntryResponse>> Create(
         CreateTimeEntryRequest request,

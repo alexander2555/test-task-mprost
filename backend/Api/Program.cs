@@ -1,3 +1,4 @@
+using Api.Application.ReferenceData;
 using Api.Application.TimeEntries;
 using Api.Contracts.Errors;
 using Api.Infrastructure.Mongo;
@@ -36,8 +37,10 @@ builder.Services
 // Настройка MongoDB: конвенции сериализации, подключения, контекст и инициализация индексов.
 builder.Services.AddMongoDb(builder.Configuration);
 
-// Application service для бизнес-правил и CRUD записей табеля.
+// Application services для бизнес-логики табеля.
 builder.Services.AddScoped<TimeEntryService>();
+builder.Services.AddScoped<TimeEntryQueryService>();
+builder.Services.AddScoped<ReferenceDataService>();
 
 var app = builder.Build();
 
@@ -53,6 +56,7 @@ app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
 
 app.Run();
 
+// Преобразует строку в camelCase для имён полей в ошибках валидации
 static string ToCamelCase(string value)
 {
     if (string.IsNullOrEmpty(value))
