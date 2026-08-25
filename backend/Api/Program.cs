@@ -1,3 +1,4 @@
+using Api.Application.Periods;
 using Api.Application.ReferenceData;
 using Api.Application.Reports;
 using Api.Application.TimeEntries;
@@ -37,11 +38,12 @@ builder.Services
 // Настройка MongoDB: конвенции сериализации, подключения, контекст и инициализация индексов.
 builder.Services.AddMongoDb(builder.Configuration);
 
-// Application services для бизнес-логики табеля и отчётов.
+// Application services для бизнес-логики табеля, периодов и отчётов.
 builder.Services.AddScoped<TimeEntryService>();
 builder.Services.AddScoped<TimeEntryQueryService>();
 builder.Services.AddScoped<ReferenceDataService>();
 builder.Services.AddScoped<ProjectReportService>();
+builder.Services.AddScoped<PeriodService>();
 
 var app = builder.Build();
 
