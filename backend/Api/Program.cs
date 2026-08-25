@@ -1,4 +1,5 @@
 using Api.Application.ReferenceData;
+using Api.Application.Reports;
 using Api.Application.TimeEntries;
 using Api.Contracts.Errors;
 using Api.Infrastructure.Mongo;
@@ -24,23 +25,23 @@ builder.Services
                             : error.ErrorMessage)
                         .ToArray());
 
-            return new BadRequestObjectResult(
-                new ApiErrorResponse
-                {
-                    Code = "validation_error",
-                    Message = "Проверьте введённые данные.",
-                    Errors = errors
-                });
+            return new BadRequestObjectResult(new ApiErrorResponse
+            {
+                Code = "validation_error",
+                Message = "Проверьте введённые данные.",
+                Errors = errors
+            });
         };
     });
 
 // Настройка MongoDB: конвенции сериализации, подключения, контекст и инициализация индексов.
 builder.Services.AddMongoDb(builder.Configuration);
 
-// Application services для бизнес-логики табеля.
+// Application services для бизнес-логики табеля и отчётов.
 builder.Services.AddScoped<TimeEntryService>();
 builder.Services.AddScoped<TimeEntryQueryService>();
 builder.Services.AddScoped<ReferenceDataService>();
+builder.Services.AddScoped<ProjectReportService>();
 
 var app = builder.Build();
 
